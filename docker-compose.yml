@@ -1,0 +1,16 @@
+services:
+  dev:
+    image: acreos-guid:latest
+    container_name: arceos-dev
+    working_dir: /mnt
+    tty: true
+    stdin_open: true
+    command: ["bash", "-lc", "trap 'exit 0' TERM INT; while sleep 1000; do :; done"]
+    volumes:
+      - .:/mnt
+      - cargo-registry:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+
+volumes:
+  cargo-registry:
+  cargo-git:

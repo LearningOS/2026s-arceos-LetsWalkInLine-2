@@ -5,6 +5,11 @@
 本仓库为 [ArceOS](https://github.com/arceos-org/arceos) 的一个剪裁版本，提供了更多初始化的组件与可用于训练的题目，作为开源操作系统第三阶段的训练题目。
 
 
+## 容器开发
+
+- Docker / Docker Compose / Dev Container 使用说明：[`docker-dev-guide.md`](./docker-dev-guide.md)
+
+
 
 ## 目录结构
 
