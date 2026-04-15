@@ -107,6 +107,19 @@ docker compose ps
 docker compose config
 ```
 
+### 3.5 ArceOS 常用命令顺序
+
+在 `arceos` 目录中，`make run` 默认会加载 `pflash.img`，因此通常要先生成它：
+
+```bash
+cd /mnt/arceos
+make pflash_img
+make disk_img
+make run
+```
+
+说明：`make disk_img` 依赖容器具备挂载 loop 设备能力，当前项目 `docker-compose.yml` 已启用 `privileged: true`。
+
 ## 4. 使用 VS Code Dev Container（推荐）
 
 项目已提供 `.devcontainer/devcontainer.json`，它会复用 `docker-compose.yml` 中的 `dev` 服务。

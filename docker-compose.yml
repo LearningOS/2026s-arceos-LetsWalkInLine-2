@@ -2,6 +2,7 @@ services:
   dev:
     image: acreos-guid:latest
     container_name: arceos-dev
+    privileged: true
     working_dir: /mnt
     tty: true
     stdin_open: true
