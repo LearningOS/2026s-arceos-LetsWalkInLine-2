@@ -40,6 +40,20 @@ let seed = arceos_api::modules::axhal::misc::random();
 
 直观理解：**同样的 key，在不同 `HashMap` 实例里，最终 hash 不再固定一致**。
 
+### 2.3 为什么“没有真随机”也能工作
+
+先区分两个概念：
+
+- **功能正确性**：`HashMap` 只需要一个可用的哈希函数（`Eq + Hash` 契约成立），不要求密码学随机。
+- **抗构造碰撞能力**：才需要“不可预测 seed”。
+
+所以“没有硬件真随机”并不会让 `HashMap` 失效，只是可能降低抗 HashDoS 的强度。
+
+换句话说：
+
+- 没有真随机 -> 仍可正常 `insert/get/remove`；
+- 只是 seed 的不可预测性变弱，极端输入下更容易被构造碰撞打性能。
+
 ## 3) `BuildHasher` 和 `Hasher` 为什么分成两层
 
 ### 3.1 `Hasher`
@@ -96,6 +110,31 @@ let seed = arceos_api::modules::axhal::misc::random();
 
 - `hashbrown::HashMap`：管理桶、探测、扩容、删除标记等结构逻辑；
 - 你的 `BuildHasher/Hasher`：决定“同一个 key 映射到哪个哈希分布”。
+
+### 5.2 `hashbrown` 在不知道 `axhal` 的情况下怎么“随机化”
+
+`hashbrown` 本身不依赖你的 HAL。它把“默认 hasher”委托给 `foldhash::fast::RandomState`，再由 `foldhash` 做跨平台 seed 生成。
+
+`foldhash` 的思路是 **best-effort nondeterminism（尽力提供非确定性）**，不是“必须拿到真随机设备”：
+
+1. **每个 hasher seed（per-hasher seed）**
+   - 混入栈地址（stack pointer）；
+   - 在 `std` 下会混入线程本地状态；
+   - 在 `no_std` 下改用全局原子状态来引入扰动。
+
+2. **共享全局 seed（shared/global seed）**
+   - 混入函数地址、静态对象地址等地址空间信息（利用 ASLR 提供变化）；
+   - 若有 `std`，还会混入时间和堆对象地址等额外信息；
+   - 在原子能力受限平台上可能退化为固定全局 seed。
+
+3. **最终再做若干轮混合（mix）**
+   - 把上述来源压缩成内部 seed，交给 hasher 使用。
+
+结论：
+
+- `hashbrown` 不需要知道 `axhal` 也能运行；
+- 它靠通用信息源做 seed 初始化；
+- 这能满足通用场景，但安全强度不等同于“来自硬件熵源的强随机”。
 
 ## 6) 不用 `hashbrown`，手写可不可以
 
