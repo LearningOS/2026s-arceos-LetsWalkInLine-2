@@ -1,32 +1,24 @@
-
-#[cfg(feature = "alloc")]
 pub use alloc::collections::{
     btree_map, btree_set, linked_list, vec_deque, BTreeMap, BTreeSet, BinaryHeap, LinkedList,
     TryReserveError, VecDeque,
 };
 
-#[cfg(feature = "alloc")]
 pub use hashbrown::{hash_set, HashSet};
 
-#[cfg(feature = "alloc")]
 use core::hash::{BuildHasher, Hasher};
 
-#[cfg(feature = "alloc")]
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-#[cfg(feature = "alloc")]
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// [`HashMap`]使用的`BuildHasher`。
 ///
 /// 用`axhal::misc::random()`生成随机种子
-#[cfg(feature = "alloc")]
 #[derive(Clone)]
 pub struct RandomState {
     seed_lo: u64,
     seed_hi: u64,
 }
 
-#[cfg(feature = "alloc")]
 impl RandomState {
     /// 使用运行时随机数创建哈希状态。
     pub fn new() -> Self {
@@ -43,14 +35,12 @@ impl RandomState {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl Default for RandomState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "alloc")]
 impl BuildHasher for RandomState {
     type Hasher = DefaultHasher;
 
@@ -60,14 +50,12 @@ impl BuildHasher for RandomState {
 }
 
 /// 一个轻量的“带密钥”哈希器，作为`axstd::collections`的默认哈希器。
-#[cfg(feature = "alloc")]
 #[derive(Clone)]
 pub struct DefaultHasher {
     state: u64,
     key: u64,
 }
 
-#[cfg(feature = "alloc")]
 impl DefaultHasher {
     fn with_keys(seed_lo: u64, seed_hi: u64) -> Self {
         Self {
@@ -77,14 +65,12 @@ impl DefaultHasher {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl Default for DefaultHasher {
     fn default() -> Self {
         Self::with_keys(0, 0)
     }
 }
 
-#[cfg(feature = "alloc")]
 impl Hasher for DefaultHasher {
     fn finish(&self) -> u64 {
         self.state ^ self.key.rotate_left(23)
@@ -102,5 +88,4 @@ impl Hasher for DefaultHasher {
     }
 }
 
-#[cfg(feature = "alloc")]
 pub type HashMap<K, V, S = RandomState> = hashbrown::HashMap<K, V, S>;
