@@ -170,3 +170,61 @@
 1. 先确认“名字归属层”：名字属于目录项，不属于文件节点。
 2. 先确认“依赖是否真生效”：patch + version + lock 三件套缺一不可。
 3. 在挂载体系里调路径相关逻辑，必须考虑“src/dst 规范化不对称”的现实调用形态。
+
+
+## 10) 本轮新增思路：沿 `src` 定位，`dst` 只做末级判定
+
+这轮我提出了一个更直观的想法：
+
+- 既然练习只要求 rename，不要求 move；
+- 那么递归定位父目录时可以主要跟着 `src` 走；
+- `dst` 只需要在关键节点做合法性和最终名字判定。
+
+这个想法是成立的，但在本项目里会遇到一个现实复杂点：
+
+- root 包装层传入 ramfs 时，`src_path` 和 `dst_path` 可能不对称；
+- 常见形态是 `src = "f1"`，`dst = "/tmp/f2"`；
+- 所以“只看 src”虽然方向对，但仍必须额外处理 `dst` 的绝对前缀剥离。
+
+因此最终方案是：
+
+- 递归主路径跟 `src`；
+- `dst` 用 `consume_dst_prefix` 处理包装层前缀；
+- 末级用 `split_parent/same_dir_target` 做“仅同目录 rename”校验；
+- 最后执行 `children.remove(src_name) + children.insert(dst_name, node)`。
+
+
+## 11) 为什么看起来“并没有简单多少”
+
+这次的感受非常真实：
+
+- 逻辑本身（改目录项 key）其实很简单；
+- 复杂度主要来自调用链和路径形态不对称，而不是 rename 算法本体。
+
+可以把复杂度拆成两部分：
+
+1. **本体复杂度（低）**
+   - 末级 rename 就是 `remove + insert`。
+
+2. **接入复杂度（高）**
+   - 需要兼容 root/mount wrapper 的入参形态；
+   - 需要保证“不支持 move”语义不被意外放开；
+   - 需要同时覆盖 `"."`、`".."`、空名、绝对前缀残留等边界。
+
+所以“代码变多”并不代表思路错了，更多是系统集成层的必要成本。
+
+
+## 12) 本轮实现更新点（相对上一版）
+
+当前 `arceos/axfs_ramfs/src/dir.rs` 相比上一版的关键变化：
+
+- `rename` 递归流程改为“以 `src` 为主线定位父目录”；
+- 新增 `split_parent(path)`：末级提取 `dst_parent` 与 `dst_name`；
+- 新增 `consume_dst_prefix(dst_path, src_name)`：处理绝对路径前缀残留；
+- 新增 `same_dir_target(dst_parent, dst_path)`：限制仅同目录 rename；
+- 在关键位置补充注释，明确“为什么要额外处理绝对前缀”。
+
+这版仍通过容器验证：
+
+- `cargo test -p axfs_ramfs` 通过；
+- `./scripts/test-ramfs_rename.sh` 输出 `ramfs_rename pass`。

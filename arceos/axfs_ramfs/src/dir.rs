@@ -172,58 +172,46 @@ impl VfsNodeOps for DirNode {
             dst_path
         );
         let (src_name, src_rest) = split_path(src_path);
-        let (dst_name, dst_rest) = split_path(dst_path);
-        match (src_rest, dst_rest) {
-            (Some(src_rest), Some(dst_rest)) => match src_name {
-                "" | "." => self.rename(src_rest, dst_rest),
-                ".." => self
-                    .parent()
-                    .ok_or(VfsError::NotFound)?
-                    .rename(src_rest, dst_rest),
+        if let Some(src_rest) = src_rest {
+            match src_name {
+                "" | "." => self.rename(src_rest, dst_path),
+                ".." => self.parent().ok_or(VfsError::NotFound)?.rename(src_rest, dst_path),
                 _ => {
-                    if src_name != dst_name {
-                        // `dst_path` may still contain mount-point components
-                        // when called by the root directory wrapper.
-                        return if dst_path.starts_with('/') {
-                            self.rename(src_path, dst_rest)
-                        } else {
-                            Err(VfsError::InvalidInput)
-                        };
-                    }
                     let subdir = self
                         .children
                         .read()
                         .get(src_name)
                         .ok_or(VfsError::NotFound)?
                         .clone();
-                    subdir.rename(src_rest, dst_rest)
-                }
-            },
-            (None, Some(dst_rest)) => {
-                // `dst_path` may still contain mount-point components
-                // when called by the root directory wrapper.
-                if dst_path.starts_with('/') {
-                    self.rename(src_path, dst_rest)
-                } else {
-                    Err(VfsError::InvalidInput)
+                    // Follow `src_path` to locate the source parent directory.
+                    // For `dst_path`, only consume leading wrappers (e.g. mount-point
+                    // prefixes from the root wrapper), then continue with the child.
+                    let dst_next = consume_dst_prefix(dst_path, src_name);
+                    subdir.rename(src_rest, dst_next)
                 }
             }
-            (None, None) => {
-                if src_name.is_empty()
-                    || dst_name.is_empty()
-                    || src_name == "."
-                    || src_name == ".."
-                    || dst_name == "."
-                    || dst_name == ".."
-                {
-                    return Err(VfsError::InvalidInput);
-                }
-                let mut children = self.children.write();
-                let node = children.remove(src_name).ok_or(VfsError::NotFound)?;
-                children.insert(dst_name.into(), node);
-                Ok(())
+        } else {
+            let (dst_parent, dst_name) = split_parent(dst_path);
+            if src_name.is_empty()
+                || src_name == "."
+                || src_name == ".."
+                || dst_name.is_empty()
+                || dst_name == "."
+                || dst_name == ".."
+            {
+                return Err(VfsError::InvalidInput);
             }
-            (Some(_), None) => Err(VfsError::InvalidInput),
+            // We only support rename within the current directory.
+            // `dst_path` is allowed to keep one absolute prefix component,
+            // e.g. `/tmp/f2` when this node is `/tmp` root.
+            if !same_dir_target(dst_parent, dst_path) {
+                return Err(VfsError::InvalidInput);
+            }
+
+            let mut children = self.children.write();
+            let node = children.remove(src_name).ok_or(VfsError::NotFound)?;
+            children.insert(dst_name.into(), node);
+            Ok(())
         }
     }
 
@@ -235,4 +223,35 @@ fn split_path(path: &str) -> (&str, Option<&str>) {
     trimmed_path.find('/').map_or((trimmed_path, None), |n| {
         (&trimmed_path[..n], Some(&trimmed_path[n + 1..]))
     })
+}
+
+fn split_parent(path: &str) -> (&str, &str) {
+    let trimmed_path = path.trim_matches('/');
+    trimmed_path
+        .rfind('/')
+        .map_or(("", trimmed_path), |n| (&trimmed_path[..n], &trimmed_path[n + 1..]))
+}
+
+fn consume_dst_prefix<'a>(dst_path: &'a str, src_name: &str) -> &'a str {
+    let mut path = dst_path;
+    loop {
+        let (name, rest) = split_path(path);
+        match (name, rest) {
+            ("" | ".", Some(rest)) => path = rest,
+            (name, Some(rest)) if name == src_name => return rest,
+            // Root wrapper may pass absolute paths with mount-point prefixes.
+            (_, Some(rest)) if path.starts_with('/') => path = rest,
+            _ => return path,
+        }
+    }
+}
+
+fn same_dir_target(dst_parent: &str, dst_path: &str) -> bool {
+    if dst_parent.is_empty() || dst_parent == "." {
+        true
+    } else if dst_parent == ".." {
+        false
+    } else {
+        dst_path.starts_with('/') && !dst_parent.contains('/')
+    }
 }
