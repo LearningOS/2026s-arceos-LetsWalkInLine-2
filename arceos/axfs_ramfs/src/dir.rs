@@ -165,6 +165,68 @@ impl VfsNodeOps for DirNode {
         }
     }
 
+    fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
+        log::debug!(
+            "rename at ramfs, src_path: {}, dst_path: {}",
+            src_path,
+            dst_path
+        );
+        let (src_name, src_rest) = split_path(src_path);
+        let (dst_name, dst_rest) = split_path(dst_path);
+        match (src_rest, dst_rest) {
+            (Some(src_rest), Some(dst_rest)) => match src_name {
+                "" | "." => self.rename(src_rest, dst_rest),
+                ".." => self
+                    .parent()
+                    .ok_or(VfsError::NotFound)?
+                    .rename(src_rest, dst_rest),
+                _ => {
+                    if src_name != dst_name {
+                        // `dst_path` may still contain mount-point components
+                        // when called by the root directory wrapper.
+                        return if dst_path.starts_with('/') {
+                            self.rename(src_path, dst_rest)
+                        } else {
+                            Err(VfsError::InvalidInput)
+                        };
+                    }
+                    let subdir = self
+                        .children
+                        .read()
+                        .get(src_name)
+                        .ok_or(VfsError::NotFound)?
+                        .clone();
+                    subdir.rename(src_rest, dst_rest)
+                }
+            },
+            (None, Some(dst_rest)) => {
+                // `dst_path` may still contain mount-point components
+                // when called by the root directory wrapper.
+                if dst_path.starts_with('/') {
+                    self.rename(src_path, dst_rest)
+                } else {
+                    Err(VfsError::InvalidInput)
+                }
+            }
+            (None, None) => {
+                if src_name.is_empty()
+                    || dst_name.is_empty()
+                    || src_name == "."
+                    || src_name == ".."
+                    || dst_name == "."
+                    || dst_name == ".."
+                {
+                    return Err(VfsError::InvalidInput);
+                }
+                let mut children = self.children.write();
+                let node = children.remove(src_name).ok_or(VfsError::NotFound)?;
+                children.insert(dst_name.into(), node);
+                Ok(())
+            }
+            (Some(_), None) => Err(VfsError::InvalidInput),
+        }
+    }
+
     axfs_vfs::impl_vfs_dir_default! {}
 }
 
