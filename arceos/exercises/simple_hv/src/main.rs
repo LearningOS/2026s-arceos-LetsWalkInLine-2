@@ -16,6 +16,7 @@ mod sbi;
 mod task;
 mod vcpu;
 
+use crate::regs::GprIndex;
 use crate::regs::GprIndex::{A0, A1};
 use axhal::mem::PhysAddr;
 use csrs::defs::hstatus;
@@ -28,6 +29,61 @@ use vcpu::VmCpuRegisters;
 use vcpu::_run_guest;
 
 const VM_ENTRY: usize = 0x8020_0000;
+const EMULATED_ILLEGAL_RET: usize = 0x1234;
+const EMULATED_LOAD_RET: usize = 0x6688;
+const EXPECTED_FAULT_LOAD_ADDR: usize = 0x40;
+
+#[inline]
+fn read_htval() -> usize {
+    let val: usize;
+    unsafe {
+        core::arch::asm!("csrr {0}, 0x643", out(reg) val);
+    }
+    val
+}
+
+#[inline]
+fn read_htinst() -> usize {
+    let val: usize;
+    unsafe {
+        core::arch::asm!("csrr {0}, 0x64a", out(reg) val);
+    }
+    val
+}
+
+#[inline]
+fn inst_len(insn_bits: usize) -> usize {
+    //RISC-V 编码约定：最低 2 位不等于 11 => 16-bit 压缩指令；
+    // 等于 11 => 至少 32-bit
+    if insn_bits & 0b11 == 0b11 {
+        4
+    } else {
+        2
+    }
+}
+
+#[inline]
+fn decode_csrr_mhartid(insn_bits: usize) -> Option<GprIndex> {
+    // 对 csrr a1, mhartid，汇编伪指令会展开成 csrrs a1, mhartid, x0
+    // 按 RISC-V 指令字段做位切片：
+    // opcode = insn[6:0]（SYSTEM = 0x73）
+    // rd = insn[11:7]
+    // funct3 = insn[14:12]（CSRRS = 010）
+    // rs1 = insn[19:15]（这里应是 x0）
+    // csr = insn[31:20]（mhartid = 0xF14）
+    let opcode = insn_bits & 0x7f;
+    let rd = ((insn_bits >> 7) & 0x1f) as u32;
+    let funct3 = (insn_bits >> 12) & 0x7;
+    let rs1 = (insn_bits >> 15) & 0x1f;
+    let csr = (insn_bits >> 20) & 0xfff;
+
+    // 全部匹配才认定这是要仿真的那条指令，然后把值写入 rd
+    if opcode == 0x73 && funct3 == 0b010 && rs1 == 0 && csr == 0xF14 {
+        GprIndex::from_raw(rd)
+    } else {
+        None
+    }
+}
 
 #[cfg_attr(feature = "axstd", no_mangle)]
 fn main() {
@@ -101,22 +157,48 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
             }
         }
         Trap::Exception(Exception::IllegalInstruction) => {
+            let bad_insn = stval::read();
             ax_println!(
                 "Bad instruction: {:#x} sepc: {:#x}",
-                stval::read(),
+                bad_insn,
                 ctx.guest_regs.sepc
             );
-            ctx.guest_regs.gprs.set_reg(A0, 0x6688);
-            ctx.guest_regs.sepc += 4;
+
+            if let Some(rd) = decode_csrr_mhartid(bad_insn) {
+                ctx.guest_regs.gprs.set_reg(rd, EMULATED_ILLEGAL_RET);
+                ctx.guest_regs.sepc += inst_len(bad_insn);
+            } else {
+                panic!(
+                    "Unhandled illegal instruction: stval={:#x}, sepc={:#x}",
+                    bad_insn, ctx.guest_regs.sepc
+                );
+            }
         }
         Trap::Exception(Exception::LoadGuestPageFault) => {
+            let fault_addr = stval::read();
+            let htval = read_htval();
+            let htinst = read_htinst();
             ax_println!(
-                "LoadGuestPageFault: stval{:#x} sepc: {:#x}",
-                stval::read(),
+                "LoadGuestPageFault: stval={:#x} htval={:#x} htinst={:#x} sepc={:#x}",
+                fault_addr,
+                htval,
+                htinst,
                 ctx.guest_regs.sepc
             );
-            ctx.guest_regs.gprs.set_reg(A1, 0x1234);
-            ctx.guest_regs.sepc += 4;
+
+            // 目前就暂时不管二次分配的事情
+            if fault_addr == EXPECTED_FAULT_LOAD_ADDR {
+                ctx.guest_regs.gprs.set_reg(A0, EMULATED_LOAD_RET);
+                ctx.guest_regs.sepc += 4;
+            } else {
+                panic!(
+                    "Unhandled LoadGuestPageFault: stval={:#x}, htval={:#x}, htinst={:#x}, sepc={:#x}",
+                    fault_addr,
+                    htval,
+                    htinst,
+                    ctx.guest_regs.sepc
+                );
+            }
         }
         _ => {
             panic!(
