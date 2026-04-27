@@ -9,8 +9,9 @@ extern crate axstd as std;
 use alloc::string::ToString;
 use riscv_vcpu::AxVCpuExitReason;
 use axerrno::{ax_err_type, AxResult};
-use memory_addr::VirtAddr;
+use memory_addr::{MemoryAddr, VirtAddr};
 use alloc::string::String;
+use alloc::vec::Vec;
 use std::fs::File;
 use riscv_vcpu::RISCVVCpu;
 use riscv_vcpu::AxVCpuExitReason::NestedPageFault;
@@ -20,6 +21,10 @@ const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 const PHY_MEM_START: usize = 0x8000_0000;
 const PHY_MEM_SIZE: usize = 0x100_0000;
 const KERNEL_BASE: usize = 0x8020_0000;
+const PFLASH_START: usize = 0x2200_0000;
+const PFLASH_SIZE: usize = 0x200_0000;
+const PFLASH_BACKING_FILE: &str = "/sbin/pflash.img";
+const PAGE_SIZE_4K: usize = 4096;
 
 use axmm::AddrSpace;
 use axhal::paging::MappingFlags;
@@ -57,18 +62,7 @@ fn main() {
                 AxVCpuExitReason::Nothing => {},
                 NestedPageFault{addr, access_flags} => {
                     debug!("addr {:#x} access {:#x}", addr, access_flags);
-                    assert_eq!(addr, 0x2200_0000.into(), "Now we ONLY handle pflash#2.");
-                    let mapping_flags = MappingFlags::from_bits(0xf).unwrap();
-                    // Passthrough-Mode
-                    let _ = aspace.map_linear(addr, addr.as_usize().into(), 4096, mapping_flags);
-
-                    /*
-                    // Emulator-Mode
-                    // Pretend to load file to fill buffer.
-                    let buf = "pfld";
-                    aspace.map_alloc(addr, 4096, mapping_flags, true);
-                    aspace.write(addr, buf.as_bytes());
-                    */
+                    emulate_pflash_fault(addr, &mut aspace).expect("Failed to emulate pflash page fault");
                 },
                 _ => {
                     panic!("Unhandled VM-Exit: {:?}", exit_reason);
@@ -100,6 +94,62 @@ fn load_vm_image(image_path: String, image_load_gpa: VirtAddr, aspace: &AddrSpac
     }
 
     Ok(())
+}
+
+fn emulate_pflash_fault(addr: VirtAddr, aspace: &mut AddrSpace) -> AxResult {
+    if addr < PFLASH_START.into() || addr >= (PFLASH_START + PFLASH_SIZE).into() {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!("Unsupported MMIO addr {:#x}, only pflash#2 is emulated", addr)
+        ));
+    }
+
+    let fault_page = addr.align_down_4k();
+    let page_offset = fault_page.as_usize() - PFLASH_START;
+    let mapping_flags = MappingFlags::from_bits(0xf).unwrap();
+
+    if aspace.page_table().query(fault_page).is_err() {
+        aspace.map_alloc(fault_page, PAGE_SIZE_4K, mapping_flags, true)?;
+    }
+
+    let page_data = read_pflash_page(PFLASH_BACKING_FILE, page_offset)?;
+    aspace.write(fault_page, &page_data)?;
+
+    Ok(())
+}
+
+fn read_pflash_page(backing_file: &str, offset: usize) -> AxResult<Vec<u8>> {
+    use core::cmp::min;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let (mut file, file_size) = open_image_file(backing_file)?;
+    let mut page = vec![0u8; PAGE_SIZE_4K];
+    if offset >= file_size {
+        return Ok(page);
+    }
+
+    let read_len = min(PAGE_SIZE_4K, file_size - offset);
+    file.seek(SeekFrom::Start(offset as u64)).map_err(|err| {
+        ax_err_type!(
+            Io,
+            format!(
+                "Failed to seek pflash backing file {}, offset {:#x}, err {:?}",
+                backing_file, offset, err
+            )
+        )
+    })?;
+
+    file.read_exact(&mut page[..read_len]).map_err(|err| {
+        ax_err_type!(
+            Io,
+            format!(
+                "Failed to read pflash backing file {}, offset {:#x}, err {:?}",
+                backing_file, offset, err
+            )
+        )
+    })?;
+
+    Ok(page)
 }
 
 fn vcpu_run(arch_vcpu: &mut RISCVVCpu) -> AxResult<AxVCpuExitReason> {
